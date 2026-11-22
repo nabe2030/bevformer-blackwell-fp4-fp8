@@ -78,7 +78,7 @@ Two more design choices:
 
 ### 1.2 There is no atomicAdd for FP8/FP4 (this constrains the backward design)
 
-In the backward pass, `atomicAdd` into `grad_value` dominates. Grepping CUDA 13.0's `cuda_fp8.h` (496 lines) and `cuda_fp4.h` for `atomicAdd` returns **zero hits in both** — there is no FP8/FP4 atomicAdd overload (in contrast, `cuda_fp16.h` L4458/4477 has `__half`/`__half2` atomicAdd, and `cuda_bf16.h` L4272/4292 has the bf16 ones). A hand-rolled CAS loop is impractical too, since atomicCAS works on a 32-bit minimum unit, which packs 4 FP8 or 8 FP4 values per RMW. **So writing gradients directly in FP8/FP4 does not even compile; the only realistic option is to stage grad_value in an FP32 buffer.** This was settled, from source evidence, before fixing the design (see `docs/KERNEL_ANALYSIS_B_BACKWARD_PRECISION.md`).
+In the backward pass, `atomicAdd` into `grad_value` dominates. Grepping CUDA 13.0's `cuda_fp8.h` (496 lines) and `cuda_fp4.h` for `atomicAdd` returns **zero hits in both** — there is no FP8/FP4 atomicAdd overload (in contrast, `cuda_fp16.h` L4458/4477 has `__half`/`__half2` atomicAdd, and `cuda_bf16.h` L4272/4292 has the bf16 ones). A hand-rolled CAS loop is impractical too, since atomicCAS works on a 32-bit minimum unit, which packs 4 FP8 or 8 FP4 values per RMW. **So writing gradients directly in FP8/FP4 does not even compile; the only realistic option is to stage grad_value in an FP32 buffer.** This was settled, from source evidence, before fixing the design.
 
 ### 1.3 The deformable backward atomic is order-nondeterministic
 
@@ -295,13 +295,12 @@ As noted in §3, initially using the autograd `F.grid_sample` as the reference c
 
 ---
 
-## 9. Reproduction (planned)
+## 9. Source and reproduction
 
-- **MSDA / DCN kernel sources**: this repo's `src/` (FP32 twin / FP8 / FP4 scalar / FP4 vector / backward / DCN FP8, each with wrapper + numerical check + microbench)
-- **Build**: auto-detect arch from device capability (`_arch_cflags.py`, Spark → sm_121 / B200 → sm_100). Standalone kernels build on the fly with `cpp_extension.load`. The BEVFormer-inclusive verification builds on u58 with docker (in-image nvcc compiles for sm_100) → Docker Hub push → RunPod pulls and runs (no compilation during billed time)
+- **MSDA kernel sources**: this repo's `src/` — CUDA kernels `ms_deform_attn_{fp32,fp8,fp4,fp4v}_kernel.cu` (forward) and `ms_deform_attn_{fp32,fp8,fp4}_backward_kernel.cu` (backward), Python wrappers `msda_*.py`, numerical checks `test_numerical*.py`, microbenchmarks `microbench*.py`, and smoke tests `smoke_*`. The DCN FP8 kernel (§4) is not included in this repository.
+- **Build**: auto-detect arch from device capability (`src/_arch_cflags.py`, Spark → sm_121 / B200 → sm_100). Each wrapper builds its kernel on the fly with `cpp_extension.load` into `build/` at the repository root
 - **Verification reference is mmcv's own FP32 kernel**. Using autograd / grid_sample as the reference mixes "quantization error" with "reference-implementation definition differences" (a lesson learned the hard way)
-
-(Concrete commands to be added at release.)
+- Example (run from `src/`): `python smoke_test_sm100.py`, `python test_numerical.py`, `python test_numerical_fp4v.py`, `python test_numerical_fp8_backward.py`, `python microbench_4way.py`, `python microbench_3way_backward.py`
 
 ---
 
@@ -330,13 +329,9 @@ As noted in §3, initially using the autograd `F.grid_sample` as the reference c
 
 > Note: Spark speed figures are for workloads tiny/base/large, bs=2. All to be finalized with reproduction commands at release. Spark's L2/SLC ~40 MB is an estimate.
 
-### Key commits
+### Development history
 
-- `2d0b72b` Stage 1-C-a: FP8 backward kernel + FP32 reference + full numerical PASS
-- `e1d0f73` Stage 1-C-4 Spark microbench: FP8 backward slower than FP32 (correctness ✓ speed ✗)
-- `8453c64` Stage 1-C-4 B200 microbench: negative speedup confirmed, 4-quadrant complete
-- `f5d177e` Stage 1-C-b: FP4 backward complete, 1-shot success
-- `068cce1` HANDOFF/OPERATIONS_NOTES/LEARNINGS handoff consolidation
+The kernels were developed in a separate working repository whose history is not published; `src/` was added to this repository as a single commit.
 
 ## License
 
